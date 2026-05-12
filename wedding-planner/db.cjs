@@ -12,10 +12,12 @@ async function initDB(retries = 5, delay = 2000) {
     for (let i = 0; i < retries; i++) {
       try {
         await db.query(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at TEXT DEFAULT NOW());`);
-        await db.query(`CREATE TABLE IF NOT EXISTS weddings (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), couple_name TEXT NOT NULL DEFAULT '', project_name TEXT DEFAULT '', event_date TEXT DEFAULT '', phrase TEXT DEFAULT '');`);
+        await db.query(`CREATE TABLE IF NOT EXISTS weddings (id TEXT PRIMARY KEY, user_id TEXT, couple_name TEXT NOT NULL DEFAULT '', project_name TEXT DEFAULT '', event_date TEXT DEFAULT '', phrase TEXT DEFAULT '');`);
         await db.query(`CREATE TABLE IF NOT EXISTS wedding_data (id TEXT PRIMARY KEY REFERENCES weddings(id) ON DELETE CASCADE, data JSONB NOT NULL DEFAULT '{}');`);
         await db.query(`CREATE TABLE IF NOT EXISTS project_permissions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES weddings(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id), permission TEXT NOT NULL DEFAULT 'view', shared_by TEXT, created_at TEXT DEFAULT NOW(), UNIQUE(project_id, user_id));`);
         await db.query(`CREATE TABLE IF NOT EXISTS share_links (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES weddings(id) ON DELETE CASCADE, token TEXT UNIQUE NOT NULL, permission TEXT NOT NULL DEFAULT 'view', created_by TEXT, created_at TEXT DEFAULT NOW(), expires_at TEXT);`);
+        // Migrate old schema: add user_id column if missing (nullable for existing orphaned rows)
+        try { await db.query(`ALTER TABLE weddings ADD COLUMN IF NOT EXISTS user_id TEXT`); } catch {}
         console.log('📦 Conectado ao PostgreSQL');
         return;
       } catch (err) {
@@ -33,10 +35,14 @@ async function initDB(retries = 5, delay = 2000) {
     db.pragma('journal_mode = WAL');
     db.pragma('foreign_keys = ON');
     db.exec(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at TEXT DEFAULT (datetime('now')));`);
-    db.exec(`CREATE TABLE IF NOT EXISTS weddings (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), couple_name TEXT NOT NULL DEFAULT '', project_name TEXT DEFAULT '', event_date TEXT DEFAULT '', phrase TEXT DEFAULT '');`);
+    db.exec(`CREATE TABLE IF NOT EXISTS weddings (id TEXT PRIMARY KEY, user_id TEXT REFERENCES users(id), couple_name TEXT NOT NULL DEFAULT '', project_name TEXT DEFAULT '', event_date TEXT DEFAULT '', phrase TEXT DEFAULT '');`);
     db.exec(`CREATE TABLE IF NOT EXISTS wedding_data (id TEXT PRIMARY KEY REFERENCES weddings(id) ON DELETE CASCADE, data TEXT NOT NULL DEFAULT '{}');`);
     db.exec(`CREATE TABLE IF NOT EXISTS project_permissions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES weddings(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id), permission TEXT NOT NULL DEFAULT 'view', shared_by TEXT, created_at TEXT DEFAULT (datetime('now')), UNIQUE(project_id, user_id));`);
     db.exec(`CREATE TABLE IF NOT EXISTS share_links (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES weddings(id) ON DELETE CASCADE, token TEXT UNIQUE NOT NULL, permission TEXT NOT NULL DEFAULT 'view', created_by TEXT, created_at TEXT DEFAULT (datetime('now')), expires_at TEXT);`);
+    // Migrate old SQLite schema: add user_id column if missing
+    try {
+      db.exec(`ALTER TABLE weddings ADD COLUMN user_id TEXT REFERENCES users(id)`);
+    } catch {}
     console.log('📦 Conectado ao SQLite');
   }
 }
