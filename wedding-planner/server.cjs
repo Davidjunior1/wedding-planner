@@ -67,7 +67,7 @@ app.get('/api/weddings', authMiddleware, async (req, res) => {
     const allowed = [];
     for (const w of all) {
       const perm = await db.getPermission(w.id, req.user.id);
-      if (perm || w.id.startsWith(req.user.id)) allowed.push(w);
+      if (perm) allowed.push(w);
     }
     res.json(allowed);
   } catch { res.json([]); }
@@ -76,15 +76,20 @@ app.get('/api/weddings', authMiddleware, async (req, res) => {
 app.post('/api/weddings', authMiddleware, async (req, res) => {
   try {
     await db.saveWeddings(req.body);
+    for (const w of req.body) {
+      const existing = await db.getPermission(w.id, req.user.id);
+      if (!existing) {
+        await db.addPermission(uuidv4(), w.id, req.user.id, 'edit', req.user.id);
+      }
+    }
     res.json({ ok: true });
-  } catch { res.status(500).json({ error: 'Erro ao salvar' }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Erro ao salvar' }); }
 });
 
 app.get('/api/wedding-data/:id', authMiddleware, async (req, res) => {
   try {
     const perm = await db.getPermission(req.params.id, req.user.id);
-    const isOwner = req.params.id.startsWith(req.user.id);
-    if (!perm && !isOwner) return res.status(403).json({ error: 'Sem permissão' });
+    if (!perm) return res.status(403).json({ error: 'Sem permissão' });
     const data = await db.getWeddingData(req.params.id);
     res.json(data);
   } catch { res.json(null); }
@@ -93,13 +98,15 @@ app.get('/api/wedding-data/:id', authMiddleware, async (req, res) => {
 app.post('/api/wedding-data/:id', authMiddleware, async (req, res) => {
   try {
     const perm = await db.getPermission(req.params.id, req.user.id);
-    const isOwner = req.params.id.startsWith(req.user.id);
-    if (!perm && !isOwner) return res.status(403).json({ error: 'Sem permissão' });
-    if (perm && perm.permission === 'view') return res.status(403).json({ error: 'Apenas visualização' });
+    if (!perm) {
+      await db.addPermission(uuidv4(), req.params.id, req.user.id, 'edit', req.user.id);
+    } else if (perm.permission === 'view') {
+      return res.status(403).json({ error: 'Apenas visualização' });
+    }
     await db.saveWeddingData(req.params.id, req.body);
     io.to(`project:${req.params.id}`).emit('data:updated', req.body);
     res.json({ ok: true });
-  } catch { res.status(500).json({ error: 'Erro ao salvar' }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Erro ao salvar' }); }
 });
 
 // ---- Share Routes ----

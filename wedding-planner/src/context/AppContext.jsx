@@ -232,6 +232,7 @@ export function AppProvider({ children }) {
   // Load initial data once auth is ready
   useEffect(() => {
     if (authLoading) return;
+    let cancelled = false;
 
     async function init() {
       let weddings = [];
@@ -254,7 +255,7 @@ export function AppProvider({ children }) {
         }
       }
 
-      // Fallback to localStorage
+      // Fallback to localStorage (when API fails or new user with no data yet)
       if (weddings.length === 0) {
         try {
           const saved = localStorage.getItem('wedding-planner-weddings');
@@ -285,6 +286,7 @@ export function AppProvider({ children }) {
         try { localStorage.setItem(`wedding-data-${id}`, JSON.stringify(weddingData)); } catch {}
       }
 
+      if (cancelled) return;
       dispatch({
         type: 'LOAD_INITIAL_DATA',
         payload: {
@@ -296,6 +298,7 @@ export function AppProvider({ children }) {
       setInitialized(true);
     }
     init();
+    return () => { cancelled = true; };
   }, [authLoading, user, authFetch]);
 
   // Persist on every state change (skip socket-originated updates to avoid loops)
@@ -325,7 +328,7 @@ export function AppProvider({ children }) {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(state.weddings),
-      }).catch(() => {});
+      });
     }
 
     // Always save to localStorage as fallback
