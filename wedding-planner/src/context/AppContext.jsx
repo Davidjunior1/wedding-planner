@@ -125,8 +125,20 @@ function appReducer(state, action) {
       return { ...state, weddings: newWeddings };
     }
 
-    case 'SET_ACTIVE_WEDDING':
-      return { ...state, activeWeddingId: action.payload, ...emptyWeddingData() };
+    case 'SET_ACTIVE_WEDDING': {
+      const wedding = state.weddings.find(w => w.id === action.payload);
+      const empty = emptyWeddingData();
+      if (wedding) {
+        empty.project = {
+          ...empty.project,
+          coupleName: wedding.coupleName || '',
+          projectName: wedding.projectName || '',
+          eventDate: wedding.eventDate || '',
+          phrase: wedding.phrase || '',
+        };
+      }
+      return { ...state, activeWeddingId: action.payload, ...empty };
+    }
 
     case 'UPDATE_WEDDING_META':
       return {
@@ -266,35 +278,9 @@ export function AppProvider({ children }) {
         }
       }
 
-      // Step 4: Create demo data if nothing exists anywhere
+      // Step 4: No demo data — user starts from scratch
       if (weddings.length === 0) {
-        const id = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString();
-        const demoMeta = {
-          id, userId: user?.id,
-          name: user?.name || 'Meu Casamento',
-          coupleName: user?.name || 'Meu Casamento',
-          projectName: 'Meu Casamento',
-          eventDate: '', phrase: '',
-        };
         weddingData = emptyWeddingData();
-        weddingData.project = {
-          ...weddingData.project,
-          coupleName: user?.name || 'Meu Casamento',
-          projectName: 'Meu Casamento',
-        };
-        weddings = [demoMeta];
-        activeId = id;
-        // Save BOTH metadata AND detail data to server
-        try {
-          await authFetch(`${API}/weddings`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(weddings),
-          });
-          await authFetch(`${API}/wedding-data/${id}`, {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(weddingData),
-          });
-        } catch (err) { console.error('Failed to save demo data:', err); }
       }
 
       // Merge wedding metadata into project when detail data lacks project fields
