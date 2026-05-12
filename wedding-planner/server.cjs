@@ -60,50 +60,74 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
   } catch { res.status(500).json({ error: 'Erro no servidor' }); }
 });
 
-// ---- Wedding Routes (with auth and permissions) ----
-app.get('/api/weddings', authMiddleware, async (req, res) => {
+// ---- Wedding Routes (no auth required for basic CRUD) ----
+app.get('/api/weddings', async (req, res) => {
   try {
     const all = await db.getWeddings();
-    const allowed = [];
-    for (const w of all) {
-      const perm = await db.getPermission(w.id, req.user.id);
-      if (perm) allowed.push(w);
+    if (req.headers.authorization) {
+      try {
+        const decoded = jwt.verify(req.headers.authorization.split(' ')[1], JWT_SECRET);
+        const allowed = [];
+        for (const w of all) {
+          const perm = await db.getPermission(w.id, decoded.id);
+          if (perm) allowed.push(w);
+        }
+        return res.json(allowed);
+      } catch {}
     }
-    res.json(allowed);
+    res.json(all);
   } catch { res.json([]); }
 });
 
-app.post('/api/weddings', authMiddleware, async (req, res) => {
+app.post('/api/weddings', async (req, res) => {
   try {
     await db.saveWeddings(req.body);
-    for (const w of req.body) {
-      const existing = await db.getPermission(w.id, req.user.id);
-      if (!existing) {
-        await db.addPermission(uuidv4(), w.id, req.user.id, 'edit', req.user.id);
-      }
+    if (req.headers.authorization) {
+      try {
+        const decoded = jwt.verify(req.headers.authorization.split(' ')[1], JWT_SECRET);
+        for (const w of req.body) {
+          const existing = await db.getPermission(w.id, decoded.id);
+          if (!existing) {
+            await db.addPermission(uuidv4(), w.id, decoded.id, 'edit', decoded.id);
+          }
+        }
+      } catch {}
     }
     res.json({ ok: true });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Erro ao salvar' }); }
 });
 
-app.get('/api/wedding-data/:id', authMiddleware, async (req, res) => {
+app.get('/api/wedding-data/:id', async (req, res) => {
   try {
-    const perm = await db.getPermission(req.params.id, req.user.id);
-    if (!perm) return res.status(403).json({ error: 'Sem permissão' });
+    if (req.headers.authorization) {
+      try {
+        const decoded = jwt.verify(req.headers.authorization.split(' ')[1], JWT_SECRET);
+        const perm = await db.getPermission(req.params.id, decoded.id);
+        if (perm) {
+          const data = await db.getWeddingData(req.params.id);
+          return res.json(data);
+        }
+      } catch {}
+    }
     const data = await db.getWeddingData(req.params.id);
     res.json(data);
   } catch { res.json(null); }
 });
 
-app.post('/api/wedding-data/:id', authMiddleware, async (req, res) => {
+app.post('/api/wedding-data/:id', async (req, res) => {
   try {
-    const perm = await db.getPermission(req.params.id, req.user.id);
-    if (!perm) {
-      await db.addPermission(uuidv4(), req.params.id, req.user.id, 'edit', req.user.id);
-    } else if (perm.permission === 'view') {
-      return res.status(403).json({ error: 'Apenas visualização' });
-    }
     await db.saveWeddingData(req.params.id, req.body);
+    let userId = null;
+    if (req.headers.authorization) {
+      try {
+        const decoded = jwt.verify(req.headers.authorization.split(' ')[1], JWT_SECRET);
+        userId = decoded.id;
+        const perm = await db.getPermission(req.params.id, decoded.id);
+        if (!perm) {
+          await db.addPermission(uuidv4(), req.params.id, decoded.id, 'edit', decoded.id);
+        }
+      } catch {}
+    }
     io.to(`project:${req.params.id}`).emit('data:updated', req.body);
     res.json({ ok: true });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Erro ao salvar' }); }

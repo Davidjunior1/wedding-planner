@@ -199,7 +199,6 @@ export function AppProvider({ children }) {
   const [initialized, setInitialized] = useState(false);
   const socketRef = useRef(null);
   const socketUpdateRef = useRef(false);
-  const { user, loading: authLoading, authFetch } = useAuth();
 
   // Socket connection
   useEffect(() => {
@@ -229,9 +228,8 @@ export function AppProvider({ children }) {
     return () => socket.off('data:updated', handler);
   }, []);
 
-  // Load initial data once auth is ready
+  // Load initial data (always try API first, fallback to localStorage)
   useEffect(() => {
-    if (authLoading) return;
     let cancelled = false;
 
     async function init() {
@@ -239,23 +237,21 @@ export function AppProvider({ children }) {
       let activeId = null;
       let weddingData = null;
 
-      // Try API if user is authenticated
-      if (user) {
-        try {
-          const r = await authFetch(`${API}/weddings`);
-          if (r.ok) weddings = await r.json();
-        } catch {}
+      // Always try API first (server allows requests without auth)
+      try {
+        const r = await fetch(`${API}/weddings`);
+        if (r.ok) weddings = await r.json();
+      } catch {}
 
-        if (weddings.length > 0) {
-          activeId = weddings[0].id;
-          try {
-            const r = await authFetch(`${API}/wedding-data/${activeId}`);
-            if (r.ok) weddingData = await r.json();
-          } catch {}
-        }
+      if (weddings.length > 0) {
+        activeId = weddings[0].id;
+        try {
+          const r = await fetch(`${API}/wedding-data/${activeId}`);
+          if (r.ok) weddingData = await r.json();
+        } catch {}
       }
 
-      // Fallback to localStorage (when API fails or new user with no data yet)
+      // Fallback to localStorage
       if (weddings.length === 0) {
         try {
           const saved = localStorage.getItem('wedding-planner-weddings');
@@ -276,12 +272,11 @@ export function AppProvider({ children }) {
         weddings = [{ id, name: 'Ana & Pedro', coupleName: 'Ana & Pedro', projectName: 'Nosso Casamento dos Sonhos', eventDate: '2026-12-12', phrase: 'O amor nunca falha.' }];
         weddingData = demoWeddingData();
         activeId = id;
-        if (user) {
-          try {
-            await authFetch(`${API}/weddings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(weddings) });
-            await authFetch(`${API}/wedding-data/${id}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(weddingData) });
-          } catch {}
-        }
+        // Save to server
+        try {
+          await fetch(`${API}/weddings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(weddings) });
+          await fetch(`${API}/wedding-data/${id}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(weddingData) });
+        } catch {}
         try { localStorage.setItem('wedding-planner-weddings', JSON.stringify(weddings)); } catch {}
         try { localStorage.setItem(`wedding-data-${id}`, JSON.stringify(weddingData)); } catch {}
       }
@@ -299,9 +294,9 @@ export function AppProvider({ children }) {
     }
     init();
     return () => { cancelled = true; };
-  }, [authLoading, user, authFetch]);
+  }, []);
 
-  // Persist on every state change (skip socket-originated updates to avoid loops)
+  // Persist on every state change (API + localStorage, skip socket-originated updates)
   useEffect(() => {
     if (!initialized || state.loading) return;
 
@@ -317,19 +312,18 @@ export function AppProvider({ children }) {
     const id = state.activeWeddingId;
     if (!id) return;
 
-    if (user) {
-      authFetch(`${API}/wedding-data/${id}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(data),
-      }).catch(() => {});
+    // Always save to API (server allows requests without auth)
+    fetch(`${API}/wedding-data/${id}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(data),
+    }).catch(() => {});
 
-      authFetch(`${API}/weddings`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(state.weddings),
-      });
-    }
+    fetch(`${API}/weddings`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(state.weddings),
+    }).catch(() => {});
 
     // Always save to localStorage as fallback
     try {
@@ -340,7 +334,7 @@ export function AppProvider({ children }) {
       localStorage.setItem('wedding-planner-weddings', JSON.stringify(meta));
       localStorage.setItem(`wedding-data-${id}`, JSON.stringify(data));
     } catch {}
-  }, [state, initialized, user, authFetch]);
+  }, [state, initialized]);
 
   return (
     <AppContext.Provider value={{ state, dispatch }}>
