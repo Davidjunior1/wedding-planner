@@ -141,6 +141,9 @@ function appReducer(state, action) {
       return { ...state, activeWeddingId: action.payload, ...empty };
     }
 
+    case 'LOAD_PROJECT_DATA':
+      return { ...state, ...action.payload };
+
     case 'UPDATE_WEDDING_META':
       return {
         ...state,
@@ -159,6 +162,8 @@ export function AppProvider({ children }) {
   const socketRef = useRef(null);
   const socketUpdateRef = useRef(false);
   const saveTimeoutRef = useRef(null);
+  const savePromiseRef = useRef(Promise.resolve());
+  const savingRef = useRef(false);
   const { user, loading: authLoading, authFetch, token } = useAuth();
 
   // Socket connection (with auth token)
@@ -315,9 +320,29 @@ export function AppProvider({ children }) {
     return () => { cancelled = true; };
   }, [authLoading, user?.id]);
 
-  // Save to server on state change (debounced 500ms, skip socket-originated)
+  // Load project detail data when activeWeddingId changes
   useEffect(() => {
-    if (!initialized || state.loading) return;
+    if (!initialized || !state.activeWeddingId) return;
+    let cancelled = false;
+    async function load() {
+      try {
+        const r = await authFetch(`${API}/wedding-data/${state.activeWeddingId}`);
+        if (!cancelled && r.ok) {
+          const data = await r.json();
+          if (data && Object.keys(data).length > 0) {
+            dispatch({ type: 'LOAD_PROJECT_DATA', payload: data });
+          }
+        }
+      } catch {}
+    }
+    load();
+    return () => { cancelled = true; };
+  }, [state.activeWeddingId, initialized]);
+
+  // Save to server on data change (debounced 500ms, skip socket-originated)
+  // Uses promise chaining to prevent out-of-order overwrites
+  useEffect(() => {
+    if (!initialized || state.loading || savingRef.current) return;
 
     if (socketUpdateRef.current) {
       socketUpdateRef.current = false;
@@ -326,39 +351,62 @@ export function AppProvider({ children }) {
 
     if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
 
-    saveTimeoutRef.current = setTimeout(async () => {
-      const detailFields = ['project', 'guests', 'checklist', 'budget', 'vendors', 'gifts', 'houseItems', 'weddingPlanner'];
-      const data = {};
-      detailFields.forEach(f => { data[f] = state[f]; });
+    // Capture data for this save attempt (from current render)
+    const dataToSave = {
+      project: state.project,
+      guests: state.guests,
+      checklist: state.checklist,
+      budget: state.budget,
+      vendors: state.vendors,
+      gifts: state.gifts,
+      houseItems: state.houseItems,
+      weddingPlanner: state.weddingPlanner,
+    };
+    const id = state.activeWeddingId;
+    const weddingsToSave = state.weddings;
 
-      const id = state.activeWeddingId;
+    saveTimeoutRef.current = setTimeout(() => {
       if (!id) return;
 
-      dispatch({ type: 'SET_SAVING', payload: true });
-
-      try {
-        await authFetch(`${API}/wedding-data/${id}`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(data),
-        });
-        await authFetch(`${API}/weddings`, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(state.weddings),
-        });
-        dispatch({ type: 'SET_LAST_SAVED', payload: Date.now() });
-      } catch (err) {
-        console.error('Save failed:', err);
-      } finally {
-        dispatch({ type: 'SET_SAVING', payload: false });
-      }
+      // Chain saves sequentially so they never overwrite each other
+      savePromiseRef.current = savePromiseRef.current.then(async () => {
+        if (savingRef.current) return;
+        savingRef.current = true;
+        dispatch({ type: 'SET_SAVING', payload: true });
+        try {
+          const r1 = await authFetch(`${API}/wedding-data/${id}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(dataToSave),
+          });
+          const r2 = await authFetch(`${API}/weddings`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(weddingsToSave),
+          });
+          if (!r1.ok) console.error('Save wedding-data failed:', await r1.text().catch(() => r1.status));
+          if (!r2.ok) console.error('Save weddings failed:', await r2.text().catch(() => r2.status));
+          if (r1.ok && r2.ok) {
+            dispatch({ type: 'SET_LAST_SAVED', payload: Date.now() });
+          }
+        } catch (err) {
+          console.error('Save failed:', err);
+        } finally {
+          dispatch({ type: 'SET_SAVING', payload: false });
+          savingRef.current = false;
+        }
+      });
     }, 500);
 
     return () => {
       if (saveTimeoutRef.current) clearTimeout(saveTimeoutRef.current);
     };
-  }, [state, initialized, user?.id]);
+  }, [
+    state.project, state.guests, state.checklist, state.budget,
+    state.vendors, state.gifts, state.houseItems, state.weddingPlanner,
+    state.activeWeddingId, state.weddings,
+    initialized, user?.id,
+  ]);
 
   return (
     <AppContext.Provider value={{ state, dispatch }}>
