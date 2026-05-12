@@ -342,7 +342,7 @@ export function AppProvider({ children }) {
   // Save to server on data change (debounced 500ms, skip socket-originated)
   // Uses promise chaining to prevent out-of-order overwrites
   useEffect(() => {
-    if (!initialized || state.loading || savingRef.current) return;
+    if (!initialized || state.loading) return;
 
     if (socketUpdateRef.current) {
       socketUpdateRef.current = false;
