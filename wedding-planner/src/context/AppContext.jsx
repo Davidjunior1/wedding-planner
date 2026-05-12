@@ -1,9 +1,10 @@
-import { createContext, useContext, useReducer, useEffect, useState } from 'react';
-import { fetchWeddings, saveWeddings, fetchWeddingData, saveWeddingData as apiSaveWeddingData } from '../api';
+import { createContext, useContext, useReducer, useEffect, useState, useRef } from 'react';
+import { io } from 'socket.io-client';
+import { useAuth } from './AuthContext';
 
 const AppContext = createContext();
 
-const STORAGE_KEY = 'wedding-planner-data';
+const API = '/api';
 
 function emptyWeddingData() {
   return {
@@ -112,6 +113,9 @@ function appReducer(state, action) {
     case 'LOAD_INITIAL_DATA':
       return { ...state, ...action.payload, loading: false };
 
+    case 'SOCKET_UPDATE':
+      return { ...state, ...action.payload };
+
     case 'UPDATE_PROJECT':
       return { ...state, project: { ...state.project, ...action.payload } };
 
@@ -193,26 +197,65 @@ function appReducer(state, action) {
 export function AppProvider({ children }) {
   const [state, dispatch] = useReducer(appReducer, initialState);
   const [initialized, setInitialized] = useState(false);
+  const socketRef = useRef(null);
+  const socketUpdateRef = useRef(false);
+  const { user, loading: authLoading, authFetch } = useAuth();
 
-  // Initial load: try API first, fallback to localStorage
+  // Socket connection
   useEffect(() => {
+    const socket = io();
+    socketRef.current = socket;
+    return () => socket.disconnect();
+  }, []);
+
+  // Join/leave project room when active wedding changes
+  useEffect(() => {
+    if (!socketRef.current || !state.activeWeddingId) return;
+    socketRef.current.emit('join:project', state.activeWeddingId);
+    return () => {
+      socketRef.current?.emit('leave:project', state.activeWeddingId);
+    };
+  }, [state.activeWeddingId]);
+
+  // Listen for real-time updates from other clients
+  useEffect(() => {
+    const socket = socketRef.current;
+    if (!socket) return;
+    const handler = (data) => {
+      socketUpdateRef.current = true;
+      dispatch({ type: 'SOCKET_UPDATE', payload: data });
+    };
+    socket.on('data:updated', handler);
+    return () => socket.off('data:updated', handler);
+  }, []);
+
+  // Load initial data once auth is ready
+  useEffect(() => {
+    if (authLoading) return;
+
     async function init() {
       let weddings = [];
       let activeId = null;
       let weddingData = null;
-      let fromServer = false;
 
-      // Try API
-      const serverWeddings = await fetchWeddings();
-      if (serverWeddings && serverWeddings.length > 0) {
-        weddings = serverWeddings;
-        activeId = weddings[0].id;
-        weddingData = await fetchWeddingData(activeId);
-        fromServer = true;
+      // Try API if user is authenticated
+      if (user) {
+        try {
+          const r = await authFetch(`${API}/weddings`);
+          if (r.ok) weddings = await r.json();
+        } catch {}
+
+        if (weddings.length > 0) {
+          activeId = weddings[0].id;
+          try {
+            const r = await authFetch(`${API}/wedding-data/${activeId}`);
+            if (r.ok) weddingData = await r.json();
+          } catch {}
+        }
       }
 
       // Fallback to localStorage
-      if (!fromServer) {
+      if (weddings.length === 0) {
         try {
           const saved = localStorage.getItem('wedding-planner-weddings');
           if (saved) weddings = JSON.parse(saved);
@@ -226,15 +269,18 @@ export function AppProvider({ children }) {
         }
       }
 
-      // First time ever: create demo
+      // First time ever: create demo data
       if (weddings.length === 0) {
         const id = Date.now().toString();
         weddings = [{ id, name: 'Ana & Pedro', coupleName: 'Ana & Pedro', projectName: 'Nosso Casamento dos Sonhos', eventDate: '2026-12-12', phrase: 'O amor nunca falha.' }];
         weddingData = demoWeddingData();
         activeId = id;
-        // Save to API and localStorage
-        await saveWeddings(weddings);
-        await apiSaveWeddingData(id, weddingData);
+        if (user) {
+          try {
+            await authFetch(`${API}/weddings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(weddings) });
+            await authFetch(`${API}/wedding-data/${id}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(weddingData) });
+          } catch {}
+        }
         try { localStorage.setItem('wedding-planner-weddings', JSON.stringify(weddings)); } catch {}
         try { localStorage.setItem(`wedding-data-${id}`, JSON.stringify(weddingData)); } catch {}
       }
@@ -250,11 +296,16 @@ export function AppProvider({ children }) {
       setInitialized(true);
     }
     init();
-  }, []);
+  }, [authLoading, user, authFetch]);
 
-  // Persist on every state change
+  // Persist on every state change (skip socket-originated updates to avoid loops)
   useEffect(() => {
     if (!initialized || state.loading) return;
+
+    if (socketUpdateRef.current) {
+      socketUpdateRef.current = false;
+      return;
+    }
 
     const detailFields = ['project', 'guests', 'checklist', 'budget', 'vendors', 'gifts', 'houseItems', 'weddingPlanner'];
     const data = {};
@@ -263,11 +314,21 @@ export function AppProvider({ children }) {
     const id = state.activeWeddingId;
     if (!id) return;
 
-    // Save to API (fire and forget)
-    apiSaveWeddingData(id, data);
-    saveWeddings(state.weddings);
+    if (user) {
+      authFetch(`${API}/wedding-data/${id}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      }).catch(() => {});
 
-    // Also save to localStorage as fallback
+      authFetch(`${API}/weddings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(state.weddings),
+      }).catch(() => {});
+    }
+
+    // Always save to localStorage as fallback
     try {
       const meta = state.weddings.map(w => {
         if (w.id === id) return { ...w, ...state.project };
@@ -276,7 +337,7 @@ export function AppProvider({ children }) {
       localStorage.setItem('wedding-planner-weddings', JSON.stringify(meta));
       localStorage.setItem(`wedding-data-${id}`, JSON.stringify(data));
     } catch {}
-  }, [state, initialized]);
+  }, [state, initialized, user, authFetch]);
 
   return (
     <AppContext.Provider value={{ state, dispatch }}>

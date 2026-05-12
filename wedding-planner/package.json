@@ -12,15 +12,20 @@
     "dev:server": "node server.cjs & npm run dev"
   },
   "dependencies": {
+    "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.9.0",
     "express": "^5.2.1",
     "html2canvas": "^1.4.1",
+    "jsonwebtoken": "^9.0.3",
     "jspdf": "^4.2.1",
     "lucide-react": "^1.14.0",
     "pg": "^8.20.0",
     "react": "^19.2.5",
     "react-dom": "^19.2.5",
-    "react-router-dom": "^7.15.0"
+    "react-router-dom": "^7.15.0",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
+    "uuid": "^14.0.0"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",

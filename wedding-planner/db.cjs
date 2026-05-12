@@ -1,61 +1,163 @@
 const path = require('path');
 const fs = require('fs');
+const bcrypt = require('bcryptjs');
 
 const DATABASE_URL = process.env.DATABASE_URL;
 let db;
 
 async function initDB() {
+  const userTable = `
+    CREATE TABLE IF NOT EXISTS users (
+      id TEXT PRIMARY KEY,
+      name TEXT NOT NULL DEFAULT '',
+      email TEXT UNIQUE NOT NULL,
+      password_hash TEXT NOT NULL,
+      created_at TEXT DEFAULT (datetime('now'))
+    );
+  `;
+  const permsTable = `
+    CREATE TABLE IF NOT EXISTS project_permissions (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      user_id TEXT NOT NULL,
+      permission TEXT NOT NULL DEFAULT 'view',
+      shared_by TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      UNIQUE(project_id, user_id)
+    );
+  `;
+  const linksTable = `
+    CREATE TABLE IF NOT EXISTS share_links (
+      id TEXT PRIMARY KEY,
+      project_id TEXT NOT NULL,
+      token TEXT UNIQUE NOT NULL,
+      permission TEXT NOT NULL DEFAULT 'view',
+      created_by TEXT,
+      created_at TEXT DEFAULT (datetime('now')),
+      expires_at TEXT
+    );
+  `;
+
   if (DATABASE_URL) {
-    // PostgreSQL (production - Render, Supabase, etc.)
     const { Pool } = require('pg');
     db = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS weddings (
-        id TEXT PRIMARY KEY,
-        couple_name TEXT NOT NULL DEFAULT '',
-        project_name TEXT DEFAULT '',
-        event_date TEXT DEFAULT '',
-        phrase TEXT DEFAULT ''
-      );
-    `);
-    await db.query(`
-      CREATE TABLE IF NOT EXISTS wedding_data (
-        id TEXT PRIMARY KEY,
-        data JSONB NOT NULL DEFAULT '{}'
-      );
-    `);
+    await db.query(`CREATE TABLE IF NOT EXISTS weddings (id TEXT PRIMARY KEY, couple_name TEXT NOT NULL DEFAULT '', project_name TEXT DEFAULT '', event_date TEXT DEFAULT '', phrase TEXT DEFAULT '');`);
+    await db.query(`CREATE TABLE IF NOT EXISTS wedding_data (id TEXT PRIMARY KEY, data JSONB NOT NULL DEFAULT '{}');`);
+    await db.query(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at TEXT DEFAULT NOW());`);
+    await db.query(`CREATE TABLE IF NOT EXISTS project_permissions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, user_id TEXT NOT NULL, permission TEXT NOT NULL DEFAULT 'view', shared_by TEXT, created_at TEXT DEFAULT NOW(), UNIQUE(project_id, user_id));`);
+    await db.query(`CREATE TABLE IF NOT EXISTS share_links (id TEXT PRIMARY KEY, project_id TEXT NOT NULL, token TEXT UNIQUE NOT NULL, permission TEXT NOT NULL DEFAULT 'view', created_by TEXT, created_at TEXT DEFAULT NOW(), expires_at TEXT);`);
     console.log('📦 Conectado ao PostgreSQL');
   } else {
-    // SQLite (local)
     const Database = require('better-sqlite3');
     const dbPath = path.join(__dirname, 'data', 'database.sqlite');
     const dir = path.dirname(dbPath);
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
     db = new Database(dbPath);
     db.pragma('journal_mode = WAL');
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS weddings (
-        id TEXT PRIMARY KEY,
-        couple_name TEXT NOT NULL DEFAULT '',
-        project_name TEXT DEFAULT '',
-        event_date TEXT DEFAULT '',
-        phrase TEXT DEFAULT ''
-      );
-    `);
-    db.exec(`
-      CREATE TABLE IF NOT EXISTS wedding_data (
-        id TEXT PRIMARY KEY,
-        data TEXT NOT NULL DEFAULT '{}'
-      );
-    `);
+    db.exec(`CREATE TABLE IF NOT EXISTS weddings (id TEXT PRIMARY KEY, couple_name TEXT NOT NULL DEFAULT '', project_name TEXT DEFAULT '', event_date TEXT DEFAULT '', phrase TEXT DEFAULT '');`);
+    db.exec(`CREATE TABLE IF NOT EXISTS wedding_data (id TEXT PRIMARY KEY, data TEXT NOT NULL DEFAULT '{}');`);
+    db.exec(userTable);
+    db.exec(permsTable);
+    db.exec(linksTable);
     console.log('📦 Conectado ao SQLite');
   }
 }
 
-function isPostgres() {
-  return !!DATABASE_URL;
+function isPostgres() { return !!DATABASE_URL; }
+
+// ---- Users ----
+async function createUser(id, name, email, password) {
+  const hash = await bcrypt.hash(password, 10);
+  if (isPostgres()) {
+    await db.query('INSERT INTO users (id, name, email, password_hash) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING', [id, name, email, hash]);
+  } else {
+    db.prepare('INSERT OR IGNORE INTO users (id, name, email, password_hash) VALUES (?,?,?,?)').run(id, name, email, hash);
+  }
 }
 
+async function findUserByEmail(email) {
+  if (isPostgres()) {
+    const r = await db.query('SELECT * FROM users WHERE email = $1', [email]);
+    return r.rows[0] || null;
+  }
+  return db.prepare('SELECT * FROM users WHERE email = ?').get(email) || null;
+}
+
+async function findUserById(id) {
+  if (isPostgres()) {
+    const r = await db.query('SELECT id, name, email, created_at FROM users WHERE id = $1', [id]);
+    return r.rows[0] || null;
+  }
+  return db.prepare('SELECT id, name, email, created_at FROM users WHERE id = ?').get(id) || null;
+}
+
+async function verifyPassword(email, password) {
+  const user = await findUserByEmail(email);
+  if (!user) return null;
+  const match = await bcrypt.compare(password, user.password_hash);
+  if (!match) return null;
+  return { id: user.id, name: user.name, email: user.email };
+}
+
+// ---- Permissions ----
+async function addPermission(id, projectId, userId, permission, sharedBy) {
+  if (isPostgres()) {
+    await db.query('INSERT INTO project_permissions (id, project_id, user_id, permission, shared_by) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (project_id, user_id) DO UPDATE SET permission=$4', [id, projectId, userId, permission, sharedBy]);
+  } else {
+    db.prepare('INSERT OR REPLACE INTO project_permissions (id, project_id, user_id, permission, shared_by) VALUES (?,?,?,?,?)').run(id, projectId, userId, permission, sharedBy);
+  }
+}
+
+async function getPermission(projectId, userId) {
+  if (isPostgres()) {
+    const r = await db.query('SELECT * FROM project_permissions WHERE project_id = $1 AND user_id = $2', [projectId, userId]);
+    return r.rows[0] || null;
+  }
+  return db.prepare('SELECT * FROM project_permissions WHERE project_id = ? AND user_id = ?').get(projectId, userId) || null;
+}
+
+async function getProjectUsers(projectId) {
+  if (isPostgres()) {
+    const r = await db.query('SELECT p.*, u.name, u.email FROM project_permissions p JOIN users u ON u.id = p.user_id WHERE p.project_id = $1', [projectId]);
+    return r.rows;
+  }
+  return db.prepare('SELECT p.*, u.name, u.email FROM project_permissions p JOIN users u ON u.id = p.user_id WHERE p.project_id = ?').all(projectId);
+}
+
+// ---- Share Links ----
+async function createShareLink(id, projectId, token, permission, createdBy) {
+  if (isPostgres()) {
+    await db.query('INSERT INTO share_links (id, project_id, token, permission, created_by) VALUES ($1,$2,$3,$4,$5)', [id, projectId, token, permission, createdBy]);
+  } else {
+    db.prepare('INSERT INTO share_links (id, project_id, token, permission, created_by) VALUES (?,?,?,?,?)').run(id, projectId, token, permission, createdBy);
+  }
+}
+
+async function findShareLink(token) {
+  if (isPostgres()) {
+    const r = await db.query('SELECT * FROM share_links WHERE token = $1', [token]);
+    return r.rows[0] || null;
+  }
+  return db.prepare('SELECT * FROM share_links WHERE token = ?').get(token) || null;
+}
+
+async function getProjectShareLinks(projectId) {
+  if (isPostgres()) {
+    const r = await db.query('SELECT * FROM share_links WHERE project_id = $1', [projectId]);
+    return r.rows;
+  }
+  return db.prepare('SELECT * FROM share_links WHERE project_id = ?').all(projectId);
+}
+
+async function deleteShareLink(id) {
+  if (isPostgres()) {
+    await db.query('DELETE FROM share_links WHERE id = $1', [id]);
+  } else {
+    db.prepare('DELETE FROM share_links WHERE id = ?').run(id);
+  }
+}
+
+// ---- Existing wedding functions (unchanged) ----
 async function getWeddings() {
   if (isPostgres()) {
     const r = await db.query('SELECT * FROM weddings ORDER BY rowid');
@@ -69,18 +171,13 @@ async function saveWeddings(weddings) {
   if (isPostgres()) {
     await db.query('DELETE FROM weddings');
     for (const w of weddings) {
-      await db.query('INSERT INTO weddings (id, couple_name, project_name, event_date, phrase) VALUES ($1, $2, $3, $4, $5) ON CONFLICT (id) DO UPDATE SET couple_name=$2, project_name=$3, event_date=$4, phrase=$5',
+      await db.query('INSERT INTO weddings (id, couple_name, project_name, event_date, phrase) VALUES ($1,$2,$3,$4,$5) ON CONFLICT (id) DO UPDATE SET couple_name=$2, project_name=$3, event_date=$4, phrase=$5',
         [w.id, w.coupleName || '', w.projectName || '', w.eventDate || '', w.phrase || '']);
     }
   } else {
-    const upsert = db.prepare('INSERT OR REPLACE INTO weddings (id, couple_name, project_name, event_date, phrase) VALUES (?, ?, ?, ?, ?)');
+    const upsert = db.prepare('INSERT OR REPLACE INTO weddings (id, couple_name, project_name, event_date, phrase) VALUES (?,?,?,?,?)');
     const del = db.prepare('DELETE FROM weddings');
-    const tx = db.transaction(() => {
-      del.run();
-      for (const w of weddings) {
-        upsert.run(w.id, w.coupleName || '', w.projectName || '', w.eventDate || '', w.phrase || '');
-      }
-    });
+    const tx = db.transaction(() => { del.run(); for (const w of weddings) upsert.run(w.id, w.coupleName || '', w.projectName || '', w.eventDate || '', w.phrase || ''); });
     tx();
   }
 }
@@ -97,17 +194,14 @@ async function getWeddingData(id) {
 async function saveWeddingData(id, data) {
   const json = JSON.stringify(data);
   if (isPostgres()) {
-    await db.query('INSERT INTO wedding_data (id, data) VALUES ($1, $2::jsonb) ON CONFLICT (id) DO UPDATE SET data = $2::jsonb', [id, json]);
+    await db.query('INSERT INTO wedding_data (id, data) VALUES ($1,$2::jsonb) ON CONFLICT (id) DO UPDATE SET data = $2::jsonb', [id, json]);
   } else {
-    db.prepare('INSERT OR REPLACE INTO wedding_data (id, data) VALUES (?, ?)').run(id, json);
+    db.prepare('INSERT OR REPLACE INTO wedding_data (id, data) VALUES (?,?)').run(id, json);
   }
 }
 
 async function closeDB() {
-  if (db) {
-    if (isPostgres()) await db.end();
-    else db.close();
-  }
+  if (db) { if (isPostgres()) await db.end(); else db.close(); }
 }
 
-module.exports = { initDB, getWeddings, saveWeddings, getWeddingData, saveWeddingData, closeDB };
+module.exports = { initDB, getWeddings, saveWeddings, getWeddingData, saveWeddingData, closeDB, createUser, findUserByEmail, findUserById, verifyPassword, addPermission, getPermission, getProjectUsers, createShareLink, findShareLink, getProjectShareLinks, deleteShareLink };
