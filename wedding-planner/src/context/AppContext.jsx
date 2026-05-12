@@ -197,25 +197,48 @@ export function AppProvider({ children }) {
       let weddings = [];
       let activeId = null;
       let weddingData = null;
-      let dataFromServer = false;
+      let loadedFromServer = false;
+      let loadedFromLocalStorage = false;
 
-      // Fetch from server (requires auth)
+      // Step 1: Try fetching from server (requires auth)
       try {
         const r = await authFetch(`${API}/weddings`);
         if (r.ok) weddings = await r.json();
       } catch {}
 
       if (weddings.length > 0) {
-        dataFromServer = true;
         activeId = weddings[0].id;
         try {
           const r = await authFetch(`${API}/wedding-data/${activeId}`);
           if (r.ok) weddingData = await r.json();
         } catch {}
+        // Only consider data valid if we also got wedding data
+        if (weddingData && Object.keys(weddingData).length > 0) {
+          loadedFromServer = true;
+        }
       }
 
-      // If server has no data, try migrating from localStorage (pre-auth data)
-      if (!dataFromServer) {
+      // Step 2: If server had only partial data (weddings list but empty detail),
+      // try migrating from localStorage
+      if (!loadedFromServer && weddings.length > 0) {
+        try {
+          const saved = localStorage.getItem(`wedding-data-${activeId}`);
+          if (saved) weddingData = JSON.parse(saved);
+        } catch {}
+        if (weddingData && Object.keys(weddingData).length > 0) {
+          loadedFromLocalStorage = true;
+          // Migrate to server
+          try {
+            await authFetch(`${API}/wedding-data/${activeId}`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(weddingData),
+            });
+          } catch {}
+        }
+      }
+
+      // Step 3: If server had no weddings at all, try localStorage
+      if (weddings.length === 0) {
         try {
           const saved = localStorage.getItem('wedding-planner-weddings');
           if (saved) weddings = JSON.parse(saved);
@@ -226,25 +249,67 @@ export function AppProvider({ children }) {
             const saved = localStorage.getItem(`wedding-data-${activeId}`);
             if (saved) weddingData = JSON.parse(saved);
           } catch {}
-          // Save migrated data to server
+          loadedFromLocalStorage = true;
+          // Migrate entire dataset to server
           try {
-            await authFetch(`${API}/weddings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(weddings) });
+            await authFetch(`${API}/weddings`, {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify(weddings),
+            });
             if (weddingData) {
-              await authFetch(`${API}/wedding-data/${activeId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(weddingData) });
+              await authFetch(`${API}/wedding-data/${activeId}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(weddingData),
+              });
             }
           } catch {}
         }
       }
 
-      // Create demo data if nothing exists anywhere
+      // Step 4: Create demo data if nothing exists anywhere
       if (weddings.length === 0) {
         const id = crypto.randomUUID ? crypto.randomUUID() : Date.now().toString();
-        weddings = [{ id, userId: user?.id, name: user?.name || 'Meu Casamento', coupleName: user?.name || 'Meu Casamento', projectName: 'Meu Casamento', eventDate: '', phrase: '' }];
+        const demoMeta = {
+          id, userId: user?.id,
+          name: user?.name || 'Meu Casamento',
+          coupleName: user?.name || 'Meu Casamento',
+          projectName: 'Meu Casamento',
+          eventDate: '', phrase: '',
+        };
         weddingData = emptyWeddingData();
+        weddingData.project = {
+          ...weddingData.project,
+          coupleName: user?.name || 'Meu Casamento',
+          projectName: 'Meu Casamento',
+        };
+        weddings = [demoMeta];
         activeId = id;
+        // Save BOTH metadata AND detail data to server
         try {
-          await authFetch(`${API}/weddings`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(weddings) });
-        } catch {}
+          await authFetch(`${API}/weddings`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(weddings),
+          });
+          await authFetch(`${API}/wedding-data/${id}`, {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(weddingData),
+          });
+        } catch (err) { console.error('Failed to save demo data:', err); }
+      }
+
+      // Merge wedding metadata into project when coming from server (no local detail data)
+      if (loadedFromServer && (!weddingData || Object.keys(weddingData).length === 0 || !weddingData.project?.coupleName)) {
+        const meta = weddings.find(w => w.id === activeId);
+        if (meta) {
+          weddingData = weddingData || {};
+          weddingData.project = {
+            ...(weddingData.project || {}),
+            coupleName: meta.coupleName || weddingData.project?.coupleName || '',
+            projectName: meta.projectName || weddingData.project?.projectName || '',
+            eventDate: meta.eventDate || weddingData.project?.eventDate || '',
+            phrase: meta.phrase || weddingData.project?.phrase || '',
+          };
+        }
       }
 
       if (cancelled) return;

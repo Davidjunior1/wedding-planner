@@ -110,8 +110,9 @@ app.get('/api/wedding-data/:id', authMiddleware, async (req, res) => {
     const access = await checkAccess(req.params.id, req.user.id);
     if (!access) return res.status(403).json({ error: 'Sem permissão' });
     const data = await db.getWeddingData(req.params.id);
-    res.json(data);
-  } catch (err) { console.error(err); res.json(null); }
+    // Return empty object if no data exists yet (so frontend always gets valid JSON)
+    res.json(data || {});
+  } catch (err) { console.error(err); res.json({}); }
 });
 
 app.post('/api/wedding-data/:id', authMiddleware, async (req, res) => {
