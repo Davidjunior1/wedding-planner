@@ -5,16 +5,25 @@ const bcrypt = require('bcryptjs');
 const DATABASE_URL = process.env.DATABASE_URL;
 let db;
 
-async function initDB() {
+async function initDB(retries = 5, delay = 2000) {
   if (DATABASE_URL) {
     const { Pool } = require('pg');
-    db = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false } });
-    await db.query(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at TEXT DEFAULT NOW());`);
-    await db.query(`CREATE TABLE IF NOT EXISTS weddings (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), couple_name TEXT NOT NULL DEFAULT '', project_name TEXT DEFAULT '', event_date TEXT DEFAULT '', phrase TEXT DEFAULT '');`);
-    await db.query(`CREATE TABLE IF NOT EXISTS wedding_data (id TEXT PRIMARY KEY REFERENCES weddings(id) ON DELETE CASCADE, data JSONB NOT NULL DEFAULT '{}');`);
-    await db.query(`CREATE TABLE IF NOT EXISTS project_permissions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES weddings(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id), permission TEXT NOT NULL DEFAULT 'view', shared_by TEXT, created_at TEXT DEFAULT NOW(), UNIQUE(project_id, user_id));`);
-    await db.query(`CREATE TABLE IF NOT EXISTS share_links (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES weddings(id) ON DELETE CASCADE, token TEXT UNIQUE NOT NULL, permission TEXT NOT NULL DEFAULT 'view', created_by TEXT, created_at TEXT DEFAULT NOW(), expires_at TEXT);`);
-    console.log('📦 Conectado ao PostgreSQL');
+    db = new Pool({ connectionString: DATABASE_URL, ssl: { rejectUnauthorized: false }, connectionTimeoutMillis: 10000 });
+    for (let i = 0; i < retries; i++) {
+      try {
+        await db.query(`CREATE TABLE IF NOT EXISTS users (id TEXT PRIMARY KEY, name TEXT NOT NULL DEFAULT '', email TEXT UNIQUE NOT NULL, password_hash TEXT NOT NULL, created_at TEXT DEFAULT NOW());`);
+        await db.query(`CREATE TABLE IF NOT EXISTS weddings (id TEXT PRIMARY KEY, user_id TEXT NOT NULL REFERENCES users(id), couple_name TEXT NOT NULL DEFAULT '', project_name TEXT DEFAULT '', event_date TEXT DEFAULT '', phrase TEXT DEFAULT '');`);
+        await db.query(`CREATE TABLE IF NOT EXISTS wedding_data (id TEXT PRIMARY KEY REFERENCES weddings(id) ON DELETE CASCADE, data JSONB NOT NULL DEFAULT '{}');`);
+        await db.query(`CREATE TABLE IF NOT EXISTS project_permissions (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES weddings(id) ON DELETE CASCADE, user_id TEXT NOT NULL REFERENCES users(id), permission TEXT NOT NULL DEFAULT 'view', shared_by TEXT, created_at TEXT DEFAULT NOW(), UNIQUE(project_id, user_id));`);
+        await db.query(`CREATE TABLE IF NOT EXISTS share_links (id TEXT PRIMARY KEY, project_id TEXT NOT NULL REFERENCES weddings(id) ON DELETE CASCADE, token TEXT UNIQUE NOT NULL, permission TEXT NOT NULL DEFAULT 'view', created_by TEXT, created_at TEXT DEFAULT NOW(), expires_at TEXT);`);
+        console.log('📦 Conectado ao PostgreSQL');
+        return;
+      } catch (err) {
+        console.error(`⏳ PostgreSQL tentativa ${i + 1}/${retries} falhou:`, err.message);
+        if (i < retries - 1) await new Promise(r => setTimeout(r, delay));
+        else throw err;
+      }
+    }
   } else {
     const Database = require('better-sqlite3');
     const dbPath = path.join(__dirname, 'data', 'database.sqlite');
