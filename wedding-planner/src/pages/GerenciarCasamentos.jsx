@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { useApp } from '../context/AppContext';
+import { useAuth } from '../context/AuthContext';
 import { useNavigate } from 'react-router-dom';
 import { Users, Plus, Trash2, Edit3, ArrowRight, Check, Calendar } from 'lucide-react';
 
 export default function GerenciarCasamentos() {
   const { state, dispatch } = useApp();
+  const { authFetch } = useAuth();
   const navigate = useNavigate();
   const [showForm, setShowForm] = useState(false);
   const [form, setForm] = useState({ name: '', coupleName: '', projectName: '', eventDate: '', phrase: '' });
@@ -32,14 +34,11 @@ export default function GerenciarCasamentos() {
     navigate('/');
   }
 
-  function handleDelete(id, e) {
+  async function handleDelete(id, e) {
     e.stopPropagation();
-    if (state.weddings.length <= 1) {
-      alert('Você precisa ter pelo menos um casamento.');
-      return;
-    }
     if (!confirm('Tem certeza que deseja excluir este casamento?')) return;
     dispatch({ type: 'DELETE_WEDDING', payload: id });
+    try { await authFetch(`/api/weddings/${id}`, { method: 'DELETE' }); } catch {}
   }
 
   return (

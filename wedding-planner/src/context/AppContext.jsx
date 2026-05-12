@@ -117,8 +117,9 @@ function appReducer(state, action) {
 
     case 'DELETE_WEDDING': {
       const newWeddings = state.weddings.filter(w => w.id !== action.payload);
-      if (newWeddings.length === 0) return state;
-      const newActive = state.activeWeddingId === action.payload ? newWeddings[0].id : state.activeWeddingId;
+      const newActive = newWeddings.length > 0
+        ? (state.activeWeddingId === action.payload ? newWeddings[0].id : state.activeWeddingId)
+        : null;
       if (newActive !== state.activeWeddingId) {
         return { ...state, weddings: newWeddings, activeWeddingId: newActive, ...emptyWeddingData() };
       }
