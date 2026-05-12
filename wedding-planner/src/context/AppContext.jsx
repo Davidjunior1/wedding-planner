@@ -297,8 +297,8 @@ export function AppProvider({ children }) {
         } catch (err) { console.error('Failed to save demo data:', err); }
       }
 
-      // Merge wedding metadata into project when coming from server (no local detail data)
-      if (loadedFromServer && (!weddingData || Object.keys(weddingData).length === 0 || !weddingData.project?.coupleName)) {
+      // Merge wedding metadata into project when detail data lacks project fields
+      if (weddings.length > 0 && (!weddingData || !weddingData.project?.coupleName)) {
         const meta = weddings.find(w => w.id === activeId);
         if (meta) {
           weddingData = weddingData || {};
