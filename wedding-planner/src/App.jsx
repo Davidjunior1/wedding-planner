@@ -13,6 +13,7 @@ import Presentes from './pages/Presentes';
 import Casa from './pages/Casa';
 import Impressao from './pages/Impressao';
 import GerenciarCasamentos from './pages/GerenciarCasamentos';
+import AcceptShare from './pages/AcceptShare';
 import Login from './pages/Login';
 import Signup from './pages/Signup';
 import ShareDialog from './components/ShareDialog';
@@ -149,6 +150,7 @@ export default function App() {
           <Route path="/casa" element={<Casa />} />
           <Route path="/impressao" element={<Impressao />} />
           <Route path="/gerenciar" element={<GerenciarCasamentos />} />
+          <Route path="/shared/:token" element={<AcceptShare />} />
         </Routes>
         <footer className="app-footer">
           Feito com <span style={{ color: 'var(--rose)' }}>♥</span> por{' '}

@@ -1,11 +1,12 @@
 import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
-import { useNavigate, Link } from 'react-router-dom';
+import { useNavigate, useSearchParams, Link } from 'react-router-dom';
 import { Heart, Mail, Lock, Eye, EyeOff } from 'lucide-react';
 
 export default function Login() {
   const { login } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [form, setForm] = useState({ email: '', password: '' });
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(false);
@@ -17,7 +18,7 @@ export default function Login() {
     setLoading(true);
     try {
       await login(form.email, form.password);
-      navigate('/');
+      navigate(searchParams.get('redirect') || '/');
     } catch (err) {
       setError(err.message);
     }

@@ -20,8 +20,7 @@ function authMiddleware(req, res, next) {
   const header = req.headers.authorization;
   if (!header) return res.status(401).json({ error: 'Token não fornecido' });
   try {
-    const decoded = jwt.verify(header.split(' ')[1], JWT_SECRET);
-    req.user = decoded;
+    req.user = jwt.verify(header.split(' ')[1], JWT_SECRET);
     next();
   } catch { res.status(401).json({ error: 'Token inválido' }); }
 }
@@ -60,75 +59,68 @@ app.get('/api/auth/me', authMiddleware, async (req, res) => {
   } catch { res.status(500).json({ error: 'Erro no servidor' }); }
 });
 
-// ---- Wedding Routes (no auth required for basic CRUD) ----
-app.get('/api/weddings', async (req, res) => {
+// ---- Helper: check if user can access project ----
+async function checkAccess(projectId, userId) {
+  const perm = await db.getPermission(projectId, userId);
+  if (perm) return perm;
+  // Also check ownership via user_id column
+  const wedding = await db.getUserWeddings(userId);
+  const owned = wedding.find(w => w.id === projectId);
+  if (owned) return { permission: 'edit' };
+  return null;
+}
+
+// ---- Wedding Routes (require auth) ----
+app.get('/api/weddings', authMiddleware, async (req, res) => {
   try {
-    const all = await db.getWeddings();
-    if (req.headers.authorization) {
-      try {
-        const decoded = jwt.verify(req.headers.authorization.split(' ')[1], JWT_SECRET);
-        const allowed = [];
-        for (const w of all) {
-          const perm = await db.getPermission(w.id, decoded.id);
-          if (perm) allowed.push(w);
-        }
-        return res.json(allowed);
-      } catch {}
-    }
-    res.json(all);
-  } catch { res.json([]); }
+    const weddings = await db.getUserWeddings(req.user.id);
+    res.json(weddings);
+  } catch (err) { console.error(err); res.json([]); }
 });
 
-app.post('/api/weddings', async (req, res) => {
+app.post('/api/weddings', authMiddleware, async (req, res) => {
   try {
-    await db.saveWeddings(req.body);
-    if (req.headers.authorization) {
-      try {
-        const decoded = jwt.verify(req.headers.authorization.split(' ')[1], JWT_SECRET);
-        for (const w of req.body) {
-          const existing = await db.getPermission(w.id, decoded.id);
-          if (!existing) {
-            await db.addPermission(uuidv4(), w.id, decoded.id, 'edit', decoded.id);
-          }
-        }
-      } catch {}
+    const { weddings } = req.body; // Accept { weddings: [...] } or array directly
+    const list = Array.isArray(req.body) ? req.body : (weddings || []);
+    for (const w of list) {
+      // Ensure each wedding has an id
+      if (!w.id) w.id = uuidv4();
+      await db.upsertWedding(w, req.user.id);
+      // Auto-grant edit permission to creator
+      const existing = await db.getPermission(w.id, req.user.id);
+      if (!existing) {
+        await db.addPermission(uuidv4(), w.id, req.user.id, 'edit', req.user.id);
+      }
     }
     res.json({ ok: true });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Erro ao salvar' }); }
 });
 
-app.get('/api/wedding-data/:id', async (req, res) => {
+app.delete('/api/weddings/:id', authMiddleware, async (req, res) => {
   try {
-    if (req.headers.authorization) {
-      try {
-        const decoded = jwt.verify(req.headers.authorization.split(' ')[1], JWT_SECRET);
-        const perm = await db.getPermission(req.params.id, decoded.id);
-        if (perm) {
-          const data = await db.getWeddingData(req.params.id);
-          return res.json(data);
-        }
-      } catch {}
-    }
-    const data = await db.getWeddingData(req.params.id);
-    res.json(data);
-  } catch { res.json(null); }
+    const access = await checkAccess(req.params.id, req.user.id);
+    if (!access || access.permission === 'view') return res.status(403).json({ error: 'Sem permissão' });
+    await db.deleteWedding(req.params.id);
+    res.json({ ok: true });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Erro ao deletar' }); }
 });
 
-app.post('/api/wedding-data/:id', async (req, res) => {
+app.get('/api/wedding-data/:id', authMiddleware, async (req, res) => {
   try {
+    const access = await checkAccess(req.params.id, req.user.id);
+    if (!access) return res.status(403).json({ error: 'Sem permissão' });
+    const data = await db.getWeddingData(req.params.id);
+    res.json(data);
+  } catch (err) { console.error(err); res.json(null); }
+});
+
+app.post('/api/wedding-data/:id', authMiddleware, async (req, res) => {
+  try {
+    const access = await checkAccess(req.params.id, req.user.id);
+    if (!access) return res.status(403).json({ error: 'Sem permissão' });
+    if (access.permission === 'view') return res.status(403).json({ error: 'Apenas visualização' });
     await db.saveWeddingData(req.params.id, req.body);
-    let userId = null;
-    if (req.headers.authorization) {
-      try {
-        const decoded = jwt.verify(req.headers.authorization.split(' ')[1], JWT_SECRET);
-        userId = decoded.id;
-        const perm = await db.getPermission(req.params.id, decoded.id);
-        if (!perm) {
-          await db.addPermission(uuidv4(), req.params.id, decoded.id, 'edit', decoded.id);
-        }
-      } catch {}
-    }
-    io.to(`project:${req.params.id}`).emit('data:updated', req.body);
+    io.to(`project:${req.params.id}`).emit('data:updated', { data: req.body, updatedBy: req.user.id });
     res.json({ ok: true });
   } catch (err) { console.error(err); res.status(500).json({ error: 'Erro ao salvar' }); }
 });
@@ -137,48 +129,84 @@ app.post('/api/wedding-data/:id', async (req, res) => {
 app.post('/api/share/create', authMiddleware, async (req, res) => {
   try {
     const { projectId, permission } = req.body;
+    const access = await checkAccess(projectId, req.user.id);
+    if (!access || access.permission === 'view') return res.status(403).json({ error: 'Sem permissão' });
     const token = uuidv4();
     await db.createShareLink(uuidv4(), projectId, token, permission || 'view', req.user.id);
-    res.json({ token, link: `${req.protocol}://${req.get('host')}/shared/${token}` });
-  } catch { res.status(500).json({ error: 'Erro ao criar link' }); }
+    const host = req.get('host');
+    res.json({ token, link: `${req.protocol}://${host}/shared/${token}` });
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Erro ao criar link' }); }
 });
 
-app.get('/api/share/:token', authMiddleware, async (req, res) => {
+app.get('/api/share/accept/:token', authMiddleware, async (req, res) => {
   try {
     const link = await db.findShareLink(req.params.token);
-    if (!link) return res.status(404).json({ error: 'Link não encontrado' });
-    const existingPerm = await db.getPermission(link.project_id, req.user.id);
-    if (!existingPerm) await db.addPermission(uuidv4(), link.project_id, req.user.id, link.permission, link.created_by);
+    if (!link) return res.status(404).json({ error: 'Link não encontrado ou expirado' });
+    const existing = await db.getPermission(link.project_id, req.user.id);
+    if (!existing) {
+      await db.addPermission(uuidv4(), link.project_id, req.user.id, link.permission, link.created_by);
+    }
     res.json({ projectId: link.project_id, permission: link.permission });
-  } catch { res.status(500).json({ error: 'Erro ao acessar link' }); }
+  } catch (err) { console.error(err); res.status(500).json({ error: 'Erro ao acessar link' }); }
 });
 
 app.get('/api/share/links/:projectId', authMiddleware, async (req, res) => {
   try {
+    const access = await checkAccess(req.params.projectId, req.user.id);
+    if (!access) return res.status(403).json({ error: 'Sem permissão' });
     const links = await db.getProjectShareLinks(req.params.projectId);
     res.json(links);
   } catch { res.json([]); }
 });
 
 app.delete('/api/share/links/:id', authMiddleware, async (req, res) => {
-  try { await db.deleteShareLink(req.params.id); res.json({ ok: true }); }
-  catch { res.status(500).json({ error: 'Erro ao deletar' }); }
+  try {
+    await db.deleteShareLink(req.params.id);
+    res.json({ ok: true });
+  } catch { res.status(500).json({ error: 'Erro ao deletar' }); }
 });
 
 app.get('/api/share/project-users/:projectId', authMiddleware, async (req, res) => {
   try {
+    const access = await checkAccess(req.params.projectId, req.user.id);
+    if (!access) return res.status(403).json({ error: 'Sem permissão' });
     const users = await db.getProjectUsers(req.params.projectId);
     res.json(users);
   } catch { res.json([]); }
 });
 
-// ---- Socket.IO Real-time ----
+// ---- Socket.IO ----
+io.use((socket, next) => {
+  const token = socket.handshake.auth?.token;
+  if (!token) return next(new Error('Token não fornecido'));
+  try {
+    socket.user = jwt.verify(token, JWT_SECRET);
+    next();
+  } catch { next(new Error('Token inválido')); }
+});
+
 io.on('connection', (socket) => {
-  socket.on('join:project', (projectId) => {
+  console.log(`🔌 Socket conectado: ${socket.user.name} (${socket.user.id})`);
+
+  socket.on('join:project', async (projectId) => {
+    const access = await checkAccess(projectId, socket.user.id);
+    if (!access) return socket.emit('error', 'Sem permissão para este projeto');
     socket.join(`project:${projectId}`);
+    socket.currentProject = projectId;
+    io.to(`project:${projectId}`).emit('user:joined', { userId: socket.user.id, name: socket.user.name });
   });
+
   socket.on('leave:project', (projectId) => {
     socket.leave(`project:${projectId}`);
+    io.to(`project:${projectId}`).emit('user:left', { userId: socket.user.id, name: socket.user.name });
+    if (socket.currentProject === projectId) socket.currentProject = null;
+  });
+
+  socket.on('disconnect', () => {
+    if (socket.currentProject) {
+      io.to(`project:${socket.currentProject}`).emit('user:left', { userId: socket.user.id, name: socket.user.name });
+    }
+    console.log(`🔌 Socket desconectado: ${socket.user.name}`);
   });
 });
 
